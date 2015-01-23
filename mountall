@@ -1,0 +1,129 @@
+#!/bin/bash
+
+sudo echo "" > /tmp/usb.conf
+if [[ -f "/tmp/newmounted" ]]; then
+	sudo rm -f "/tmp/newmounted"
+fi
+if [[ -f "/tmp/usb.conf" ]]; then
+	sudo rm -f "/tmp/usb.conf"
+fi
+
+sudo touch "/tmp/usb.conf"
+sudo fdisk -l | awk '{print $1}' | grep "/dev/s" | while read -r drive; do
+	drivelast=`echo ${drive: -4}`
+	label=`sudo lsblk -o label -n $drive`
+	if [[ $label == "" ]]; then
+		label=$drivelast
+	fi
+	if ! [[ `sudo mount | grep $drive` == "" ]]; then
+		# Drive is already mounted.
+		cat >> /tmp/usb.conf <<EOF
+[$label]
+	comment = $label USB Drive
+	path = $mountpoint
+	read only = no
+	create mask = 0777
+	directory mask = 0777
+	follow symlinks = yes
+	wide links = yes
+EOF
+	else
+		if [[ $1 == "--remount" ]]; then
+			if [[ -f "/run/mounted_$drivelast" ]]; then
+				sudo rm -f "/run/mounted_$drivelast"
+			fi
+		fi
+		if ! [[ -f "/run/mounted_$drivelast" ]]; then
+			fs=`sudo fdisk -l | grep "$drive" | awk '{print $6 $7}'`
+			if [[ $fs == "cW95" ]]; then
+				fs=W95
+			fi
+			if [[ $label == "" ]]; then
+				echo "No label found for "$drivelast"."
+				mountpoint=/media/$drivelast
+			else
+				echo Label for $drivelast is: $label
+				mountpoint=/media/$label
+			fi
+			echo Drive: $drive, FS: $fs, End: $drivelast
+			if ! [ -d "$mountpoint" ]; then
+				echo Creating directory "$mountpoint"
+				sudo mkdir "$mountpoint"
+				sudo chmod 777 "$mountpoint"
+			fi
+			if [[ $fs == "HPFS/NTFS/exFAT" ]]; then
+				sudo echo "" > "/tmp/newmounted"
+				echo Mounting $drive as $mountpoint with type ntfs-3g
+				sudo mount -o rw,permissions $drive "$mountpoint" -t ntfs-3g
+			else
+				if [[ $fs == "W95" ]]; then
+					sudo echo "" > "/tmp/newmounted"
+					echo Mounting $drive as $mountpoint, with type vfat
+					sudo mount -t vfat -ouser,umask=000 $drive "$mountpoint"
+				else
+					if [[ $fs == "FAT16" ]]; then
+						sudo echo "" > "/tmp/newmounted"
+						echo Mounting $drive as $mountpoint, with type vfat
+						sudo mount -t vfat -ouser,umask=000 $drive "$mountpoint"
+					else
+						sudo echo "" > "/tmp/newmounted"
+						echo Mounting $drive as $mountpoint, with type: Auto
+						sudo mount -o rw,permissions $drive "$mountpoint"
+					fi
+				fi
+			fi
+			sudo echo "mounted" > "/run/mounted_$drivelast"
+			cat >> /tmp/usb.conf <<EOF
+[$label]
+	comment = $label USB Drive
+	path = $mountpoint
+	read only = no
+	create mask = 0777
+	directory mask = 0777
+	follow symlinks = yes
+	wide links = yes
+EOF
+		fi
+	fi
+done
+if [[ -f "/tmp/newmounted" ]]; then
+	echo Re-writing samba config...
+	sudo mv -f "/tmp/usb.conf" "/etc/samba/usb.conf"
+	sudo service samba reload > /dev/null
+	sudo rm -f "/tmp/newmounted"
+fi
+ls -1 /media | while read -r directory; do
+	drive=`sudo mount | grep "/media/$directory" | awk '{print $1}'`
+	if [[ $drive == "" ]]; then
+		echo Unmounting "/media/$directory"...
+		sudo umount "/media/$directory"
+		sudo rmdir "/media/$directory"
+		sudo echo "" > "/tmp/newmounted"
+	else
+		if [[ `sudo fdisk -l | grep "$drive"` == "" ]]; then
+			drivelast=`echo ${drive: -4}`
+			echo Unmounting "/media/$directory"... Unexpected removal.
+			sudo umount "/media/$directory"
+			sudo rmdir "/media/$directory"
+			if [[ -f "/run/mounted_$drivelast" ]]; then
+				sudo rm -f "/run/mounted_$drivelast"
+			fi
+			sudo echo "" > "/tmp/newmounted"
+		fi
+	fi
+done
+mountcount=`ls -1 /run/mounted_* 2>/dev/null | wc -l`
+if [[ $mountcount != 0 ]]; then
+	ls -1 /run/mounted_* | while read -r mounted; do
+		drivelast=`echo ${mounted: -4}`
+		if [[ `sudo fdisk -l | grep "$drivelast"` == "" ]]; then
+			sudo rm -f "/run/mounted_$drivelast"
+		fi
+	done
+fi
+if [[ -f "/tmp/newmounted" ]]; then
+	echo Re-writing samba config...
+        sudo mv -f "/tmp/usb.conf" "/etc/samba/usb.conf"
+        sudo service samba reload > /dev/null
+        sudo rm -f "/tmp/newmounted"
+fi
